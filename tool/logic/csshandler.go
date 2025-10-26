@@ -7,20 +7,33 @@ import (
 	"strings"
 )
 
-const cssTagTemplate = `<link rel="stylesheet" href="%s" />`
+// Note there's a new line before and after. Backticks do not honor \n characters
+const cssTagTemplate = `
+<link rel="stylesheet" href="%s" />
+`
 
 var ErrNoHeadTag = errors.New("no head tag in html")
 
 type (
 	CSSHandler interface {
 		InjectCSSIntoHTML(html io.Reader, cssPath string) ([]byte, error)
+		GetCSSFilesFromPath(path string) ([]ReaderwWithPath, error)
+		MinifyCSS(r io.Reader) ([]byte, error)
+		WriteCSS(w io.Writer, minifiedCSS []byte) error
 	}
 
 	HandleCSS struct {
+		extension string
 	}
 )
 
-func (h HandleCSS) InjectCSSIntoHTML(html io.Reader, cssPath string) ([]byte, error) {
+func NewHandleCSS(extension string) *HandleCSS {
+	return &HandleCSS{
+		extension: extension,
+	}
+}
+
+func (c HandleCSS) InjectCSSIntoHTML(html io.Reader, cssPath string) ([]byte, error) {
 	htmlBytes, err := io.ReadAll(html)
 	if err != nil {
 		return []byte{}, err
@@ -48,4 +61,8 @@ func (h HandleCSS) InjectCSSIntoHTML(html io.Reader, cssPath string) ([]byte, er
 		htmlStr[insertPos:]
 
 	return []byte(result), nil
+}
+
+func (c HandleCSS) GetCSSFilesFromPath(path string) ([]ReaderwWithPath, error) {
+	return getFilesFromDirectory(path, c.extension)
 }

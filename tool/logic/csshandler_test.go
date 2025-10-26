@@ -15,7 +15,9 @@ const testHTMLLines = `<html>
 </html>`
 
 const testHTMLLinesWant = `<html>
-<head><link rel="stylesheet" href="./hello" /><head/>
+<head>
+<link rel="stylesheet" href="./hello" />
+<head/>
 <body></body>
 </html>`
 

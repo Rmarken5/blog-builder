@@ -1,16 +1,20 @@
 package main
 
 import (
-	"github.com/rmarken5/blog-builder/tool/logic"
 	"log/slog"
+
+	"github.com/rmarken5/blog-builder/tool/logic"
 )
 
 func main() {
 	markdownDir := "markdown"
 	outputDir := "build"
-	htmlBuilder := logic.New(outputDir)
+	htmlHandler := logic.NewHandleHTML(outputDir)
+	cssHandler := logic.NewHandleCSS(".css")
+	mdHandler := logic.NewHandleMarkdown()
+	payloadBuilder := logic.NewPayloadBuilder(htmlHandler, cssHandler, mdHandler)
 
-	err := htmlBuilder.BuildHTMLFromMD(markdownDir)
+	err := htmlHandler.BuildHTMLFromMD(markdownDir)
 	if err != nil {
 		slog.Error("error building html from markdown")
 	}

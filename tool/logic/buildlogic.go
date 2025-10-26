@@ -1,9 +1,6 @@
 package logic
 
 import (
-	"github.com/gomarkdown/markdown"
-	"github.com/gomarkdown/markdown/html"
-	"github.com/gomarkdown/markdown/parser"
 	"io/fs"
 	"log"
 	"log/slog"
@@ -13,116 +10,97 @@ import (
 )
 
 type (
-	Build interface {
-		BuildHTMLFromMD(path string) error
+	PayloadBuilder interface {
+		BuildPayload(inputPath, payloadPath string) error
 	}
-	HTMLBuilder struct {
-		markdownPath    string
-		buildOutputPath string
+	BuildPayload struct {
+		htmlHandler     HTMLHandler
+		cssHandler      CSSHandler
+		markdownHandler MarkdownHandler
 	}
 )
 
-func New(buildOutputPath string) *HTMLBuilder {
-	return &HTMLBuilder{
-		buildOutputPath: buildOutputPath,
+func NewPayloadBuilder(htmlHandler HTMLHandler, cssHandler CSSHandler, markdownHandler MarkdownHandler) *BuildPayload {
+	return &BuildPayload{
+		htmlHandler:     htmlHandler,
+		cssHandler:      cssHandler,
+		markdownHandler: markdownHandler,
 	}
 }
 
-func (h HTMLBuilder) BuildHTMLFromMD(path string) error {
-	h.markdownPath = path
-	err := filepath.WalkDir(path, h.walker)
+func (b BuildPayload) BuildPayload(inputPath, payloadPath string) error {
+	log.Printf("reading markdown from %s and building to %s", inputPath, payloadPath)
+	markdownFiles, err := b.markdownHandler.GetMarkdownFilesFromPath(inputPath)
 	if err != nil {
-		slog.Error("program failed in error", "error", err)
+		slog.Error("error reading markdown directory", "error", err)
 		return err
 	}
-
-	return nil
-}
-
-func (h HTMLBuilder) walker(path string, dirEntry fs.DirEntry, err error) error {
-	if err != nil {
-		return err
-	}
-	slog.Info("path being walked", "path", path)
-	if dirEntry.IsDir() {
-		_, err := h.createNewBuildDirectory(path)
+	for _, mdFile := range markdownFiles {
+		htmlBytes, err := b.htmlHandler.ConvertMDToHTML(mdFile.Reader)
+		mdFile.Reader.Close()
 		if err != nil {
-			log.Printf("unable to create new build directory: %s - %s", path, err.Error())
 			return err
 		}
-		return nil
-	}
 
-	// Ignore anything that's not markdown
-	if path[len(path)-3:] != ".md" {
-		slog.Info("Ignoring path", "path", path)
-		return nil
-	}
+		htmlFile, err := b.htmlHandler.CreateFileFromMDPath(mdFile.Path)
+		if err != nil {
+			slog.Error("error creating html file from markdown", "error", err)
+			return err
+		}
 
-	mdBytes, err := os.ReadFile(path)
-	if err != nil {
-		log.Printf("Unable to read file: %s - %s", path, err.Error())
-		return err
-	}
-
-	htmlFile, err := createHtmlFile(path)
-	if err != nil {
-		return err
-	}
-	defer htmlFile.Close()
-
-	toHTML := mdToHTML(mdBytes)
-	_, err = htmlFile.Write(toHTML)
-	if err != nil {
-		slog.Error("error writing html to file", "error", err)
-		return err
+		err = b.htmlHandler.WriteHTML(htmlFile, htmlBytes)
+		if err != nil {
+			slog.Error("error writing to html to file")
+		}
+		htmlFile.Close()
 	}
 
 	return nil
 }
 
-func createHtmlFile(path string) (*os.File, error) {
-	filePath := buildDirFromPath(path)
-	filePath = strings.Replace(filePath, ".md", ".html", -1)
-	htmlFile, err := os.Create(filePath)
+func getFilesFromDirectory(rootPath, extension string) ([]ReaderwWithPath, error) {
+	files := make([]ReaderwWithPath, 0)
+	err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, err error) error {
+
+		if d.IsDir() {
+			return nil
+		}
+
+		if strings.ToLower(path[len(path)-len(extension):]) != strings.ToLower(extension) {
+			return nil
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+
+		files = append(files, ReaderwWithPath{
+			Path:   path,
+			Reader: f,
+		})
+		return nil
+	})
 	if err != nil {
-		slog.Error("error creating html file", "error", err)
+		slog.Error("error getting files from path", "path", rootPath, "error", err)
 		return nil, err
 	}
-
-	return htmlFile, nil
+	return files, nil
 }
 
-func buildDirFromPath(path string) string {
-	return strings.Replace(path, "markdown", "build", 1)
-}
+func getDirectoryStructure(rootPath string) ([]string, error) {
+	dirs := make([]string, 0)
+	err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, err error) error {
 
-const generatorTag = `  <meta name="GENERATOR" content="github.com/rmarken5/blog-builder`
+		if d.IsDir() {
+			dirs = append(dirs, path)
+		}
 
-func mdToHTML(md []byte) []byte {
-	// create markdown parser with extensions
-	extensions := parser.CommonExtensions | parser.AutoHeadingIDs | parser.NoEmptyLineBeforeBlock
-	p := parser.NewWithExtensions(extensions)
-	doc := p.Parse(md)
-
-	// create HTML renderer with extensions
-	htmlFlags := html.CommonFlags | html.HrefTargetBlank | html.CompletePage
-	opts := html.RendererOptions{Flags: htmlFlags, Generator: generatorTag}
-	renderer := html.NewRenderer(opts)
-
-	return markdown.Render(doc, renderer)
-}
-
-func (h HTMLBuilder) createNewBuildDirectory(filePath string) (string, error) {
-	fullPath := strings.Replace(filePath, h.markdownPath, h.buildOutputPath, 1)
-	err := os.Mkdir(fullPath, 0777)
-	if os.IsExist(err) {
-		slog.Info("Directory already exists", "dir", fullPath)
-		return fullPath, nil
-	}
+		return nil
+	})
 	if err != nil {
-		log.Printf("error creating directory build: %s", fullPath)
-		return "", err
+		slog.Error("error getting files from path", "path", rootPath, "error", err)
+		return nil, err
 	}
-	return fullPath, nil
+	return dirs, nil
 }
