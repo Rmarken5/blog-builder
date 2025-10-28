@@ -1,18 +1,23 @@
 package logic
 
-import "io"
+import (
+	"context"
+	"io"
+)
 
 const markdownFileExtension = ".md"
 
+var _ MarkdownHandler = HandleMarkdown{}
+
 type (
-	ReaderwWithPath struct {
+	ReaderWithPath struct {
 		Path   string
 		Reader io.ReadCloser
 	}
 
 	MarkdownHandler interface {
-		GetMarkdownFilesFromPath(path string) ([]ReaderwWithPath, error)
-		GetMarkdownDirectoryStructure(path string) ([]string, error)
+		GetMarkdownFilesFromPath(ctx context.Context, path string) ([]ReaderWithPath, error)
+		GetMarkdownDirectoryStructure(ctx context.Context, path string) ([]string, error)
 	}
 
 	HandleMarkdown struct {
@@ -23,10 +28,10 @@ func NewHandleMarkdown() *HandleMarkdown {
 	return &HandleMarkdown{}
 }
 
-func (m HandleMarkdown) GetMarkdownFilesFromPath(path string) ([]ReaderwWithPath, error) {
+func (m HandleMarkdown) GetMarkdownFilesFromPath(ctx context.Context, path string) ([]ReaderWithPath, error) {
 	return getFilesFromDirectory(path, markdownFileExtension)
 }
 
-func (m HandleMarkdown) GetMarkdownDirectoryStructure(path string) ([]string, error) {
+func (m HandleMarkdown) GetMarkdownDirectoryStructure(ctx context.Context, path string) ([]string, error) {
 	return getDirectoryStructure(path)
 }
