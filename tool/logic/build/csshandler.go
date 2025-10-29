@@ -1,4 +1,4 @@
-package logic
+package build
 
 import (
 	"context"
@@ -25,7 +25,7 @@ var ErrNoHeadTag = errors.New("no head tag in html")
 type (
 	CSSHandler interface {
 		InjectCSSIntoHTML(ctx context.Context, html io.Reader, cssPath string) ([]byte, error)
-		GetCSSFilesFromPath(ctx context.Context) ([]ReaderWithPath, error)
+		GetCSSFilesFromSource(ctx context.Context) ([]ReaderWithPath, error)
 		MinifyCSS(ctx context.Context, r io.Reader) ([]byte, error)
 		WriteCSS(ctx context.Context, w io.Writer, minifiedCSS []byte) error
 		CreateBuildFileFromCSSSource(ctx context.Context, path string) (*os.File, error)
@@ -79,7 +79,7 @@ func (c HandleCSS) InjectCSSIntoHTML(ctx context.Context, html io.Reader, cssPat
 	return []byte(result), nil
 }
 
-func (c HandleCSS) GetCSSFilesFromPath(ctx context.Context) ([]ReaderWithPath, error) {
+func (c HandleCSS) GetCSSFilesFromSource(ctx context.Context) ([]ReaderWithPath, error) {
 	return getFilesFromDirectory(c.cssSourceDirectory, c.extension)
 }
 
