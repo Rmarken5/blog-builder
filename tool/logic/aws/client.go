@@ -17,14 +17,23 @@ var (
 	ErrUploadFile = errors.New("error uploading file to s3")
 )
 
+const (
+	contentTypeTextCSS  = "text/css"
+	contentTypeTextHTML = "text/html"
+)
+
 type (
 	S3Client interface {
 		GetBucketHashes(ctx context.Context) (map[string]string, error)
-		WriteFileToBucket(ctx context.Context, key string, contentType string, file io.Reader) error
+		WriteHTMLToBucket(ctx context.Context, key string, file io.Reader) error
+		WriteCSSToBucket(ctx context.Context, key string, file io.Reader) error
 	}
 	Client struct {
 		client *s3.Client
 		bucket string
+	}
+	NoOp struct {
+		S3Client
 	}
 )
 
@@ -74,17 +83,40 @@ func calcMD5(r io.Reader) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func (c Client) WriteFileToBucket(ctx context.Context, key string, contentType string, file io.Reader) error {
+func (c Client) WriteHTMLToBucket(ctx context.Context, key string, file io.Reader) error {
 	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(c.bucket),
 		Key:         aws.String(key),
 		Body:        file,
-		ContentType: aws.String(contentType),
+		ContentType: aws.String(contentTypeTextHTML),
 	})
 	if err != nil {
 		slog.Error("error uploading file to s3", "filename", key, "error", err)
 		return fmt.Errorf("error writing file %s to s3: %w - %w", key, err, ErrUploadFile)
 	}
 
+	return nil
+}
+func (c Client) WriteCSSToBucket(ctx context.Context, key string, file io.Reader) error {
+	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(c.bucket),
+		Key:         aws.String(key),
+		Body:        file,
+		ContentType: aws.String(contentTypeTextCSS),
+	})
+	if err != nil {
+		slog.Error("error uploading file to s3", "filename", key, "error", err)
+		return fmt.Errorf("error writing file %s to s3: %w - %w", key, err, ErrUploadFile)
+	}
+
+	return nil
+}
+
+func (n NoOp) WriteHTMLToBucket(ctx context.Context, key string, file io.Reader) error {
+	slog.Info("NoOp Write for HTML", "key", key)
+	return nil
+}
+func (n NoOp) WriteCSSToBucket(ctx context.Context, key string, file io.Reader) error {
+	slog.Info("noop wirte for CSS", "key", key)
 	return nil
 }

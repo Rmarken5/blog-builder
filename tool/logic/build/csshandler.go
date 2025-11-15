@@ -10,7 +10,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/rmarken5/blog-builder/tool/logic/aws"
 	"github.com/tdewolff/minify/v2/minify"
+	"golang.org/x/sync/errgroup"
 )
 
 // Note there's a new line before and after. Backticks do not honor \n characters
@@ -32,20 +34,33 @@ type (
 		GetCSSDirectoryStructure(ctx context.Context) ([]string, error)
 		GetBuiltCSSFiles(ctx context.Context) ([]ReaderWithPath, error)
 		CreateBuildDirectoryForPath(context.Context, string) (string, error)
+		UploadCSS(ctx context.Context, upload map[string]io.Reader) error
 	}
 
 	HandleCSS struct {
 		cssBuildDirectory  string
 		cssSourceDirectory string
 		extension          string
+		awsClient          aws.S3Client
 	}
 )
 
-func NewHandleCSS(cssSourceDirectory, cssBuildDirectory, extension string) *HandleCSS {
+func (c HandleCSS) UploadCSS(ctx context.Context, upload map[string]io.Reader) error {
+	errG, ctx := errgroup.WithContext(ctx)
+	for k, r := range upload {
+		errG.Go(func() error {
+			return c.awsClient.WriteHTMLToBucket(ctx, k, r)
+		})
+	}
+	return errG.Wait()
+}
+
+func NewHandleCSS(cssSourceDirectory, cssBuildDirectory, extension string, awsClient aws.S3Client) *HandleCSS {
 	return &HandleCSS{
 		cssBuildDirectory:  cssBuildDirectory,
 		cssSourceDirectory: cssSourceDirectory,
 		extension:          extension,
+		awsClient:          awsClient,
 	}
 }
 

@@ -38,128 +38,6 @@ func NewPayloadBuilder(htmlHandler HTMLHandler, cssHandler CSSHandler, markdownH
 	}
 }
 
-func (b BuildPayload) BuildToS3(ctx context.Context, inputPath, payloadPath string) error {
-	uploadedFiles := make([]string, 0)
-	rHashes, err := b.s3Client.GetBucketHashes(ctx)
-	if err != nil {
-		slog.Error("error calculating hash from s3", "error", err)
-
-	}
-	slog.Info("remote hashes", "hashes", rHashes)
-
-	localHashes := make(map[string]string, 0)
-	log.Println("creating build directory")
-
-	cssFiles, err := b.cssHandler.GetCSSFilesFromSource(ctx)
-	if err != nil {
-		slog.Error("error getting css files from css directory", "error", err)
-		return err
-	}
-
-	for _, cssFile := range cssFiles {
-		lKey := strings.TrimPrefix(cssFile.Path, payloadPath+"/")
-		minifiedBytes, err := b.cssHandler.MinifyCSS(ctx, cssFile.Reader)
-		if err != nil {
-			slog.Error("error minifying css file", "error", err)
-			return err
-		}
-
-		hash, err := calcMD5(bytes.NewReader(minifiedBytes))
-		if err != nil {
-			slog.Error("error calculating hash", "error", err)
-		}
-
-		localHashes[lKey] = hash
-		if shouldUpload(rHashes, lKey, hash) {
-			slog.Info("No matching hash, writing file to s3", "file", lKey)
-			uploadedFiles = append(uploadedFiles, lKey)
-			err = b.s3Client.WriteFileToBucket(ctx, lKey, "text/css", bytes.NewReader(minifiedBytes))
-			if err != nil {
-				slog.Error("error writing to s3", "key", lKey, "error", err)
-			}
-		}
-	}
-
-	log.Printf("reading markdown from %s", inputPath)
-	markdownFiles, err := b.markdownHandler.GetMarkdownFilesFromPath(ctx, inputPath)
-	if err != nil {
-		slog.Error("error reading markdown directory", "error", err)
-		return err
-	}
-	for _, mdFile := range markdownFiles {
-		mdBytes := bytes.NewBuffer([]byte{})
-		_, err := io.Copy(mdBytes, mdFile.Reader)
-		if err != nil {
-			slog.Error("error copying bytes to buffer for mdfile", "error", err)
-		}
-		mdFile.Reader.Close()
-
-		tags, err := GetTags(ctx, bytes.NewReader(mdBytes.Bytes()), findTags)
-		if err != nil {
-			slog.Error("error getting tags from markdown file", "error", err)
-			return err
-		}
-		createdAtDate, err := GetCreatedAtDate(ctx, bytes.NewReader(mdBytes.Bytes()), findCreatedAt)
-		if err != nil {
-			slog.Error("error getting createdAt date from md", "error", err)
-		}
-		mdStripped, err := RemoveMetaData(ctx, bytes.NewReader(mdBytes.Bytes()))
-		if err != nil {
-			slog.Error("error removing metadata from md", "error", err)
-		}
-		htmlBytes, err := b.htmlHandler.ConvertMDToHTML(ctx, bytes.NewReader(mdStripped))
-		if err != nil {
-			slog.Error("error converting md to html", "error", err)
-			return err
-		}
-		htmlBytes, err = InjectMetadataHeader(ctx, bytes.NewReader(htmlBytes), Metadata{
-			Tags:      tags,
-			CreatedAt: createdAtDate.Format(time.RFC850),
-		})
-		if err != nil {
-			slog.Error("error injecting metadata into html", "error", err)
-		}
-		for _, cssFile := range cssFiles {
-			cssPath := strings.TrimPrefix(cssFile.Path, payloadPath+"/")
-			count := strings.Count(mdFile.Path, "/")
-			cssPath = strings.Repeat("../", count-1) + cssPath
-
-			htmlBytes, err = b.cssHandler.InjectCSSIntoHTML(ctx, bytes.NewReader(htmlBytes), cssPath)
-			if err != nil {
-				slog.Error("error injecting css into html", "error", err)
-				return err
-			}
-		}
-
-		htmlBytes, err = b.htmlHandler.ConvertMdLinksToHtml(bytes.NewReader(htmlBytes))
-		if err != nil {
-			slog.Error("error converting md to html", "error", err)
-			return err
-		}
-
-		hash, err := calcMD5(bytes.NewReader(htmlBytes))
-		if err != nil {
-			slog.Error("error calculating hash for html", "path", mdFile.Path, "error", err)
-			return err
-		}
-
-		lKey := strings.Replace(strings.TrimPrefix(mdFile.Path, inputPath+"/"), markdownFileExtension, HTMLFileExtension, -1)
-		if shouldUpload(rHashes, lKey, hash) {
-			slog.Info("No matching hash, writing file to s3", "file", lKey)
-			uploadedFiles = append(uploadedFiles, lKey)
-			err = b.s3Client.WriteFileToBucket(ctx, lKey, "text/html", bytes.NewReader(htmlBytes))
-			if err != nil {
-				slog.Error("error writing to s3", "key", lKey, "error", err)
-			}
-		}
-		localHashes[lKey] = hash
-	}
-
-	log.Printf("files written to s3: %v", uploadedFiles)
-
-	return nil
-}
-
 func (b BuildPayload) BuildPayload(ctx context.Context, inputPath, payloadPath string) error {
 	rHashes, err := b.s3Client.GetBucketHashes(ctx)
 	if err != nil {
@@ -168,7 +46,8 @@ func (b BuildPayload) BuildPayload(ctx context.Context, inputPath, payloadPath s
 	}
 	slog.Info("remote hashes", "hashes", rHashes)
 
-	localHashes := make(map[string]string)
+	cssFilesToUpload := make(map[string]io.Reader)
+	htmlFilesToUpload := make(map[string]io.Reader)
 	log.Println("creating build directory")
 
 	buildPaths, err := b.markdownHandler.GetMarkdownDirectoryStructure(ctx, inputPath)
@@ -210,23 +89,10 @@ func (b BuildPayload) BuildPayload(ctx context.Context, inputPath, payloadPath s
 	}
 
 	for _, cssFile := range cssFiles {
-		minifiedBytes, err := b.cssHandler.MinifyCSS(ctx, cssFile.Reader)
+		minifiedBytes, err := b.minifyCSSAndWrite(ctx, cssFile)
 		if err != nil {
-			slog.Error("error minifying css file", "error", err)
 			return err
 		}
-
-		cssBuildFile, err := b.cssHandler.CreateBuildFileFromCSSSource(ctx, cssFile.Path)
-		if err != nil {
-			slog.Error("error creating css file", "error", err)
-			return err
-		}
-		_, err = cssBuildFile.Write(minifiedBytes)
-		if err != nil {
-			slog.Error("error writing minified bytes to build output", "error", err)
-			return err
-		}
-		cssBuildFile.Close()
 
 		hash, err := calcMD5(bytes.NewReader(minifiedBytes))
 		if err != nil {
@@ -236,12 +102,8 @@ func (b BuildPayload) BuildPayload(ctx context.Context, inputPath, payloadPath s
 		lKey := strings.TrimPrefix(cssFile.Path, payloadPath+"/")
 		if shouldUpload(rHashes, lKey, hash) {
 			slog.Info("No matching hash, writing file to s3", "file", lKey)
-			err = b.s3Client.WriteFileToBucket(ctx, lKey, "text/css", bytes.NewReader(minifiedBytes))
-			if err != nil {
-				slog.Error("error writing to s3", "key", lKey, "error", err)
-			}
+			cssFilesToUpload[lKey] = bytes.NewReader(minifiedBytes)
 		}
-		localHashes[lKey] = hash
 	}
 
 	cssBuildFiles, err := b.cssHandler.GetBuiltCSSFiles(ctx)
@@ -257,58 +119,11 @@ func (b BuildPayload) BuildPayload(ctx context.Context, inputPath, payloadPath s
 		return err
 	}
 	for _, mdFile := range markdownFiles {
-		mdBytes := bytes.NewBuffer([]byte{})
-		_, err := io.Copy(mdBytes, mdFile.Reader)
+		htmlBytes, err := b.createHtmlBytes(ctx, inputPath, payloadPath, cssBuildFiles, mdFile)
 		if err != nil {
-			slog.Error("error copying bytes to buffer for mdfile", "error", err)
+			return err
 		}
 		mdFile.Reader.Close()
-
-		tags, err := GetTags(ctx, bytes.NewReader(mdBytes.Bytes()), findTags)
-		if err != nil {
-			slog.Error("error getting tags from markdown file", "error", err)
-			return err
-		}
-		createdAtDate, err := GetCreatedAtDate(ctx, bytes.NewReader(mdBytes.Bytes()), findCreatedAt)
-		if err != nil {
-			slog.Error("error getting createdAt date from md", "error", err)
-		}
-		mdStripped, err := RemoveMetaData(ctx, bytes.NewReader(mdBytes.Bytes()))
-		if err != nil {
-			slog.Error("error removing metadata from md", "error", err)
-		}
-		htmlBytes, err := b.htmlHandler.ConvertMDToHTML(ctx, bytes.NewReader(mdStripped))
-		if err != nil {
-			slog.Error("error converting md to html", "error", err)
-			return err
-		}
-		htmlBytes, err = InjectMetadataHeader(ctx, bytes.NewReader(htmlBytes), Metadata{
-			Tags:      tags,
-			CreatedAt: createdAtDate.Format(time.RFC850),
-		})
-		if err != nil {
-			slog.Error("error injecting metadata into html", "error", err)
-		}
-
-		for _, css := range cssBuildFiles {
-			cssPath := strings.TrimPrefix(css.Path, payloadPath+"/")
-			p := strings.Replace(mdFile.Path, inputPath, payloadPath, -1)
-			log.Println("path, ", p)
-			count := strings.Count(p, "/")
-			cssPath = strings.Repeat("../", count-1) + cssPath
-
-			htmlBytes, err = b.cssHandler.InjectCSSIntoHTML(ctx, bytes.NewReader(htmlBytes), cssPath)
-			if err != nil {
-				slog.Error("error injecting css into html", "error", err)
-				return err
-			}
-		}
-
-		htmlBytes, err = b.htmlHandler.ConvertMdLinksToHtml(bytes.NewReader(htmlBytes))
-		if err != nil {
-			slog.Error("error converting md to html", "error", err)
-			return err
-		}
 
 		htmlFile, err := b.htmlHandler.CreateFileFromMDPath(ctx, mdFile.Path)
 		if err != nil {
@@ -330,21 +145,104 @@ func (b BuildPayload) BuildPayload(ctx context.Context, inputPath, payloadPath s
 		lKey := strings.Replace(strings.TrimPrefix(mdFile.Path, inputPath+"/"), markdownFileExtension, HTMLFileExtension, -1)
 		if shouldUpload(rHashes, lKey, hash) {
 			slog.Info("No matching hash, writing file to s3", "file", lKey)
-			err = b.s3Client.WriteFileToBucket(ctx, lKey, "text/html", bytes.NewReader(htmlBytes))
-			if err != nil {
-				slog.Error("error writing to s3", "key", lKey, "error", err)
-			}
+			htmlFilesToUpload[lKey] = bytes.NewReader(htmlBytes)
 		}
-		localHashes[lKey] = hash
 	}
 
 	for _, css := range cssBuildFiles {
 		css.Reader.Close()
 	}
 
-	slog.Info("local hashes", "hashes", localHashes)
+	if err = b.cssHandler.UploadCSS(ctx, cssFilesToUpload); err != nil {
+		slog.Error("error uploading css files", "error", err)
+		return err
+	}
 
+	if err = b.htmlHandler.UploadHTML(ctx, htmlFilesToUpload); err != nil {
+		slog.Error("error uploading html", "error", err)
+		return err
+	}
 	return nil
+}
+
+func (b BuildPayload) createHtmlBytes(ctx context.Context, inputPath string, payloadPath string, cssBuildFiles []ReaderWithPath, mdFile ReaderWithPath) ([]byte, error) {
+	mdBytes := bytes.NewBuffer([]byte{})
+	_, err := io.Copy(mdBytes, mdFile.Reader)
+	if err != nil {
+		slog.Error("error copying bytes to buffer for mdfile", "error", err)
+		return nil, err
+	}
+
+	tags, err := GetTags(ctx, bytes.NewReader(mdBytes.Bytes()), findTags)
+	if err != nil {
+		slog.Error("error getting tags from markdown file", "error", err)
+		return nil, err
+	}
+	createdAtDate, err := GetCreatedAtDate(ctx, bytes.NewReader(mdBytes.Bytes()), findCreatedAt)
+	if err != nil {
+		slog.Error("error getting createdAt date from md", "error", err)
+		return nil, err
+	}
+	mdStripped, err := RemoveMetaData(ctx, bytes.NewReader(mdBytes.Bytes()))
+	if err != nil {
+		slog.Error("error removing metadata from md", "error", err)
+		return nil, err
+	}
+	htmlBytes, err := b.htmlHandler.ConvertMDToHTML(ctx, bytes.NewReader(mdStripped))
+	if err != nil {
+		slog.Error("error converting md to html", "error", err)
+		return nil, err
+	}
+	htmlBytes, err = InjectMetadataHeader(ctx, bytes.NewReader(htmlBytes), Metadata{
+		Tags:      tags,
+		CreatedAt: createdAtDate.Format(time.RFC850),
+	})
+	if err != nil {
+		slog.Error("error injecting metadata into html", "error", err)
+		return nil, err
+	}
+
+	for _, css := range cssBuildFiles {
+		cssPath := strings.TrimPrefix(css.Path, payloadPath+"/")
+		p := strings.Replace(mdFile.Path, inputPath, payloadPath, -1)
+		log.Println("path, ", p)
+		count := strings.Count(p, "/")
+		cssPath = strings.Repeat("../", count-1) + cssPath
+
+		htmlBytes, err = b.cssHandler.InjectCSSIntoHTML(ctx, bytes.NewReader(htmlBytes), cssPath)
+		if err != nil {
+			slog.Error("error injecting css into html", "error", err)
+			return nil, err
+		}
+	}
+
+	htmlBytes, err = b.htmlHandler.ConvertMdLinksToHtml(bytes.NewReader(htmlBytes))
+	if err != nil {
+		slog.Error("error converting md to html", "error", err)
+		return nil, err
+	}
+	return htmlBytes, nil
+}
+
+func (b BuildPayload) minifyCSSAndWrite(ctx context.Context, cssFile ReaderWithPath) ([]byte, error) {
+	minifiedBytes, err := b.cssHandler.MinifyCSS(ctx, cssFile.Reader)
+	if err != nil {
+		slog.Error("error minifying css file", "error", err)
+		return nil, err
+	}
+
+	cssBuildFile, err := b.cssHandler.CreateBuildFileFromCSSSource(ctx, cssFile.Path)
+	if err != nil {
+		slog.Error("error creating css file", "error", err)
+		return nil, err
+	}
+	_, err = cssBuildFile.Write(minifiedBytes)
+	if err != nil {
+		slog.Error("error writing minified bytes to build output", "error", err)
+		return nil, err
+	}
+	cssBuildFile.Close()
+	return minifiedBytes, nil
 }
 
 func getFilesFromDirectory(rootPath, extension string) ([]ReaderWithPath, error) {

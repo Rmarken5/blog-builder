@@ -41,11 +41,19 @@ func main() {
 	// Create an Amazon S3 service client
 	client := s3.NewFromConfig(cfg)
 	ctx := context.Background()
+	var s3Client aws.S3Client
+	s3Impl := aws.New(client, *bucketName)
+	s3Client = s3Impl
+	if uploadDisabled {
+		s3Client = &aws.NoOp{
+			S3Client: s3Impl,
+		}
+	}
 
-	htmlHandler := build.NewHandleHTML(*markdownDir, *outputDir)
-	cssHandler := build.NewHandleCSS(*cssDirectory, *outputDir+"/css", ".css")
+	htmlHandler := build.NewHandleHTML(*markdownDir, *outputDir, s3Client)
+	cssHandler := build.NewHandleCSS(*cssDirectory, *outputDir+"/css", ".css", s3Client)
 	mdHandler := build.NewHandleMarkdown()
-	payloadBuilder := build.NewPayloadBuilder(htmlHandler, cssHandler, mdHandler, aws.New(client, *bucketName))
+	payloadBuilder := build.NewPayloadBuilder(htmlHandler, cssHandler, mdHandler, s3Client)
 
 	if shouldBuildLocal {
 		err = payloadBuilder.BuildPayload(ctx, *markdownDir, *outputDir)
@@ -53,10 +61,5 @@ func main() {
 			slog.Error("error building html from markdown")
 		}
 	}
-	if !uploadDisabled {
-		err = payloadBuilder.BuildToS3(ctx, *markdownDir, *outputDir)
-		if err != nil {
-			slog.Error("error sending build to s3")
-		}
-	}
+
 }

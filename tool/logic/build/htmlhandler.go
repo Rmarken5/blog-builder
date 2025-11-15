@@ -16,6 +16,8 @@ import (
 	"github.com/gomarkdown/markdown"
 	"github.com/gomarkdown/markdown/html"
 	"github.com/gomarkdown/markdown/parser"
+	"github.com/rmarken5/blog-builder/tool/logic/aws"
+	"golang.org/x/sync/errgroup"
 )
 
 //go:embed templates/html-metadata-tags.html
@@ -36,20 +38,33 @@ type (
 		WriteHTML(ctx context.Context, w io.Writer, data []byte) error
 		CreateFileFromMDPath(ctx context.Context, path string) (*os.File, error)
 		CreateBuildDirectoryForPath(ctx context.Context, path string) (string, error)
+		UploadHTML(ctx context.Context, upload map[string]io.Reader) error
 	}
 	HandleHTML struct {
 		fileExtension   string
 		markdownPath    string
 		buildOutputPath string
 		cssHandler      CSSHandler
+		awsClient       aws.S3Client
 	}
 )
 
-func NewHandleHTML(markdownDirectory string, buildOutputPath string) *HandleHTML {
+func (h HandleHTML) UploadHTML(ctx context.Context, upload map[string]io.Reader) error {
+	errG, ctx := errgroup.WithContext(ctx)
+	for k, r := range upload {
+		errG.Go(func() error {
+			return h.awsClient.WriteHTMLToBucket(ctx, k, r)
+		})
+	}
+	return errG.Wait()
+}
+
+func NewHandleHTML(markdownDirectory string, buildOutputPath string, awsClient aws.S3Client) *HandleHTML {
 	return &HandleHTML{
 		markdownPath:    markdownDirectory,
 		fileExtension:   HTMLFileExtension,
 		buildOutputPath: buildOutputPath,
+		awsClient:       awsClient,
 	}
 }
 
