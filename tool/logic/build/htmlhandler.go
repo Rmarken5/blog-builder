@@ -28,7 +28,10 @@ var createdAtTemplate string
 
 var _ HTMLHandler = HandleHTML{}
 
-const HTMLFileExtension = ".html"
+const (
+	HTMLFileExtension = ".html"
+	injectAfter       = "</h1>"
+)
 
 type (
 	HTMLHandler interface {
@@ -205,11 +208,10 @@ type Metadata struct {
 func InjectMetadataHeader(ctx context.Context, r io.Reader, metadata Metadata) ([]byte, error) {
 	bufWritter := bytes.NewBuffer([]byte{})
 	scanner := bufio.NewScanner(r)
-	bodyStart := "<body>"
 	for scanner.Scan() {
 		b := scanner.Bytes()
-		bufWritter.Write(b)
-		if strings.Contains(string(b), bodyStart) {
+		bufWritter.Write(append(b, []byte("\n")...))
+		if strings.Contains(string(b), injectAfter) {
 			t, err := template.New("").Parse(createdAtTemplate)
 			if err != nil {
 				return nil, err

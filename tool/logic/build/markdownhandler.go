@@ -134,7 +134,7 @@ func RemoveMetaData(ctx context.Context, r io.Reader) ([]byte, error) {
 		if metadataStart {
 			continue
 		}
-		if _, err := bWriter.WriteString(line); err != nil {
+		if _, err := bWriter.WriteString(line + "\n"); err != nil {
 			return nil, err
 		}
 	}

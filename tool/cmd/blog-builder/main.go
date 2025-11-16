@@ -24,7 +24,7 @@ var disableUpload = flag.Bool("disable-upload", false, "setting the disable-uplo
 func main() {
 
 	flag.Parse()
-	shouldBuildLocal := !*withoutBuildOutput
+	// shouldBuildLocal := !*withoutBuildOutput
 	log.Println("WithoutUpload: ", *disableUpload)
 	uploadDisabled := *disableUpload
 
@@ -55,11 +55,9 @@ func main() {
 	mdHandler := build.NewHandleMarkdown()
 	payloadBuilder := build.NewPayloadBuilder(htmlHandler, cssHandler, mdHandler, s3Client)
 
-	if shouldBuildLocal {
-		err = payloadBuilder.BuildPayload(ctx, *markdownDir, *outputDir)
-		if err != nil {
-			slog.Error("error building html from markdown")
-		}
+	err = payloadBuilder.BuildPayload(ctx, *markdownDir, *outputDir)
+	if err != nil {
+		slog.Error("error building html from markdown")
 	}
 
 }
